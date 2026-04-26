@@ -31,6 +31,8 @@ class Article:
     abstract: Optional[str]
     keywords: Optional[str]
     language: Language
+    page_start: int = 0
+    page_end: Optional[int] = None
 
 _REGEX_CACHE: Dict[str, re.Pattern] = {}
 
@@ -75,7 +77,7 @@ def _page_text(page) -> str:
             if prev_x1 is not None:
                 gap = x0 - prev_x1
                 ref = max(prev_width, width, 1.0)
-                if gap > ref * 0.15:   # gap > 15% of char width → word boundary
+                if gap > ref * 0.15:
                     text += " "
             text += ch_text
             prev_x1 = x1
@@ -111,7 +113,7 @@ def load_pdf_pages(pdf_path: str, workers: int = 8) -> List[str]:
             indexed.extend(batch)
 
     indexed.sort(key=lambda x: x[0])
-    return [t for _, t in indexed]
+    return indexed
 
 def _title_from_header(header: str) -> Optional[str]:
     paras = [p.strip() for p in re.split(r"\n\s*\n", header) if p.strip()]
@@ -145,8 +147,8 @@ def _norm(text: Optional[str]) -> Optional[str]:
     text = text.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
     return re.sub(r"\s+", " ", text).strip()
 
-def _process_page(args: Tuple[str, Language]) -> List[Article]:
-    text, lang = args
+def _process_page(args: Tuple[str, Language, int]) -> List[Article]:
+    text, lang, page_num = args
     cfg = LANG_CONFIG[lang]
     abs_m = cfg["abstract_markers"]
     kw_m  = cfg["keywords_markers"]
@@ -168,20 +170,35 @@ def _process_page(args: Tuple[str, Language]) -> List[Article]:
             _norm(_abstract(remainder, abs_m, kw_m)),
             _norm(_keywords(remainder, kw_m, stp_m)),
             lang,
+            page_start=page_num,
         ))
     return articles
 
 def process_pdf(pdf_path: str, lang: Language, workers: int = 8) -> List[Article]:
-    pages = load_pdf_pages(pdf_path, workers)
+    indexed_pages = load_pdf_pages(pdf_path, workers)
+    tasks = [(text, lang, idx + 1) for idx, text in indexed_pages]
     results: List[Article] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for articles in pool.map(_process_page, [(p, lang) for p in pages]):
+        for articles in pool.map(_process_page, tasks):
             results.extend(articles)
-    return results
+    results.sort(key=lambda a: a.page_start)
+    for i, art in enumerate(results):
+        if i + 1 < len(results):
+            art.page_end = max(art.page_start, results[i + 1].page_start - 1)
+        else:
+            art.page_end = art.page_start
+            esults
 
 def export_excel(articles: List[Article], out: str) -> None:
     pd.DataFrame([
-        {"title": a.title, "abstract": a.abstract, "keywords": a.keywords, "language": a.language}
+        {
+            "title": a.title,
+            "abstract": a.abstract,
+            "keywords": a.keywords,
+            "language": a.language,
+            "page_start": a.page_start,
+            "page_end": a.page_end,
+        }
         for a in articles
     ]).to_excel(out, index=False)
 
