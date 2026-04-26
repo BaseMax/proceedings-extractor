@@ -2,6 +2,7 @@
 
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from typing import List, Optional, Literal, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +21,7 @@ LANG_CONFIG: Dict[Language, dict] = {
     "fa": {
         "abstract_markers": ["چکیده."],
         "keywords_markers": ["واژه های کلیدی:"],
-        "keywords_stop_markers": ["طبقه بندی موضوعی ["],
+        "keywords_stop_markers": ["طبقه بندی موضوعی"],
     },
 }
 
@@ -34,6 +35,17 @@ class Article:
     page_end: Optional[int] = None
 
 _REGEX_CACHE: Dict[str, re.Pattern] = {}
+
+_RTL_RE = re.compile(r'[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]')
+
+def _fix_rtl(line: str) -> str:
+    non_space = [c for c in line if not c.isspace()]
+    if not non_space:
+        return line
+    if sum(1 for c in non_space if _RTL_RE.match(c)) / len(non_space) > 0.4:
+        return line[::-1]
+    return line
+
 
 _NOISE_RE = re.compile(
     r"@|^\d+$|^\d+\s*[-–]\s*\d+$"
@@ -81,7 +93,7 @@ def _page_text(page) -> str:
             text += ch_text
             prev_x1 = x1
             prev_width = width if width > 0 else prev_width
-        stripped = text.strip()
+        stripped = _fix_rtl(unicodedata.normalize('NFKC', text.strip()))
         if stripped:
             parts.append(stripped)
 
@@ -207,9 +219,8 @@ def filter_articles(articles: List[Article]) -> List[Article]:
 def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int = 8) -> None:
     with ThreadPoolExecutor(max_workers=2) as pool:
         fa_f = pool.submit(process_pdf, persian_pdf, "fa", workers)
-        # en_f = pool.submit(process_pdf, english_pdf, "en", workers)
-        # all_articles = filter_articles(fa_f.result() + en_f.result())
-        all_articles = filter_articles(fa_f.result())
+        en_f = pool.submit(process_pdf, english_pdf, "en", workers)
+        all_articles = filter_articles(fa_f.result() + en_f.result())
         
     export_excel(all_articles, out)
 
@@ -232,10 +243,22 @@ def debug_pdf(pdf_path: str, lang: Language, pages: int = 5) -> None:
 
     with pdfplumber.open(pdf_path) as pdf:
         total = len(pdf.pages)
-        print(f"Total pages: {total}\n")
-        for i in range(min(pages, total)):
+        print(f"Total pages: {total}")
+        print(f"Scanning all pages, showing first {pages} that have content or marker hits...\n")
+        shown = 0
+        for i in range(total):
+            if shown >= pages:
+                break
             page = pdf.pages[i]
             text = _page_text(page)
+
+            abs_m = abs_re.search(text)
+            kw_m  = kw_re.search(text)
+            stp_m = stp_re.search(text)
+
+            if not text.strip():
+                continue
+
             print(f"--- Page {i+1} (chars={len(page.chars)}) ---")
             preview = text[:600].replace("\n", "\\n")
             print(f"TEXT PREVIEW:\n  {preview}\n")
@@ -243,18 +266,16 @@ def debug_pdf(pdf_path: str, lang: Language, pages: int = 5) -> None:
             non_ascii = sorted({c for c in text if ord(c) > 127})[:30]
             print(f"  Non-ASCII chars in page: {non_ascii}")
 
-            abs_m = abs_re.search(text)
-            kw_m  = kw_re.search(text)
-            stp_m = stp_re.search(text)
-            print(f"  abstract  marker match : {abs_m.group(0)!r} at pos {abs_m.start()} " if abs_m else "  abstract  marker match : NOT FOUND")
-            print(f"  keywords  marker match : {kw_m.group(0)!r} at pos {kw_m.start()} "  if kw_m  else "  keywords  marker match : NOT FOUND")
-            print(f"  stop      marker match : {stp_m.group(0)!r} at pos {stp_m.start()} " if stp_m else "  stop      marker match : NOT FOUND")
+            print(f"  abstract  marker match : {abs_m.group(0)!r} at pos {abs_m.start()}" if abs_m else "  abstract  marker match : NOT FOUND")
+            print(f"  keywords  marker match : {kw_m.group(0)!r} at pos {kw_m.start()}"  if kw_m  else "  keywords  marker match : NOT FOUND")
+            print(f"  stop      marker match : {stp_m.group(0)!r} at pos {stp_m.start()}" if stp_m else "  stop      marker match : NOT FOUND")
 
             if abs_m and not kw_m:
                 snippet = text[abs_m.end():abs_m.end()+300].replace("\n", "\\n")
                 print(f"  [text after abstract marker]: {snippet!r}")
 
             print()
+            shown += 1
 
 
 if __name__ == "__main__":
