@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Literal, Dict
+from typing import List, Optional, Literal, Dict, Pattern, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pdfplumber
 import pandas as pd
 
 
 # =========================
-# Models & Config
+# Types & Config
 # =========================
+
 Language = Literal["fa", "en"]
 
 LANG_CONFIG: Dict[Language, dict] = {
@@ -22,9 +24,14 @@ LANG_CONFIG: Dict[Language, dict] = {
     "fa": {
         "abstract_markers": ["چکیده"],
         "keywords_markers": ["کلیدواژه", "کلید واژه", "کلمات کلیدی", "واژه‌های کلیدی"],
-        "keywords_stop_markers": ["طبقه‌بندی موضوعی", "طبقه‌ بندی موضوعی", "MSC"],
+        "keywords_stop_markers": ["طبقه‌بندی موضوعی", "MSC"],
     },
 }
+
+
+# =========================
+# Models
+# =========================
 
 @dataclass
 class Article:
@@ -35,24 +42,32 @@ class Article:
 
 
 # =========================
-# Utilities
+# Regex Cache (IMPORTANT SPEED OPTIMIZATION)
 # =========================
 
-def build_marker_pattern(markers: List[str]) -> str:
-    escaped = [re.escape(m) for m in markers]
-    return "(" + "|".join(escaped) + ")"
+_REGEX_CACHE: Dict[str, Pattern[str]] = {}
+
+
+def get_regex(pattern: str) -> Pattern[str]:
+    if pattern not in _REGEX_CACHE:
+        _REGEX_CACHE[pattern] = re.compile(pattern, re.S | re.I)
+    return _REGEX_CACHE[pattern]
+
+
+def build_pattern(markers: List[str]) -> str:
+    return "(" + "|".join(re.escape(m) for m in markers) + ")"
 
 
 # =========================
-# PDF Reader
+# PDF LOADER
 # =========================
 
-def extract_pages_text(pdf_path: str) -> List[str]:
+def load_pdf_pages(pdf_path: str) -> List[str]:
     pages: List[str] = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            text: Optional[str] = page.extract_text()
+            text = page.extract_text()
             if text:
                 pages.append(text)
 
@@ -60,31 +75,30 @@ def extract_pages_text(pdf_path: str) -> List[str]:
 
 
 # =========================
-# Splitter
+# SPLIT ARTICLES (FAST)
 # =========================
 
-def split_articles(text: str, abstract_markers: List[str]) -> List[str]:
-    pattern = build_marker_pattern(abstract_markers)
-    parts = re.split(pattern, text)
+def split_articles(page: str, abstract_markers: List[str]) -> List[str]:
+    pattern = get_regex(build_pattern(abstract_markers))
+    parts = pattern.split(page)
 
     articles: List[str] = []
 
     for i in range(1, len(parts), 2):
-        marker = parts[i]
-        content = parts[i + 1] if i + 1 < len(parts) else ""
-        articles.append(marker + content)
+        content = parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
+        articles.append(content)
 
     return articles
 
 
 # =========================
-# Extractors
+# TITLE EXTRACTION
 # =========================
-def extract_title(block: str, abstract_markers: List[str]) -> Optional[str]:
-    marker_pattern = build_marker_pattern(abstract_markers)
 
-    parts = re.split(marker_pattern, block, maxsplit=1)
+def extract_title(text: str, abstract_markers: List[str]) -> Optional[str]:
+    marker_pat = get_regex(build_pattern(abstract_markers))
 
+    parts = marker_pat.split(text, maxsplit=1)
     if len(parts) < 2:
         return None
 
@@ -93,202 +107,169 @@ def extract_title(block: str, abstract_markers: List[str]) -> Optional[str]:
     lines = [
         l.strip()
         for l in header.split("\n")
-        if l.strip()
+        if len(l.strip()) > 8
     ]
 
     if not lines:
         return None
 
-    filtered = [
+    # filter noise
+    cleaned = [
         l for l in lines
-        if len(l) > 15 and not l.strip().startswith(".")
+        if not re.search(r"@|\d|university|department|faculty", l, re.I)
     ]
 
-    if not filtered:
-        return None
+    return max(cleaned, key=len) if cleaned else None
 
-    return max(filtered, key=len)
 
-def extract_abstract(
-    text: str,
-    abstract_markers: List[str],
-    keywords_markers: List[str],
-) -> Optional[str]:
-    abs_pattern = build_marker_pattern(abstract_markers)
-    key_pattern = build_marker_pattern(keywords_markers)
+# =========================
+# ABSTRACT (FAST + CLEAN)
+# =========================
 
-    pattern = rf"{abs_pattern}\s*(.*?)\s*(?:{key_pattern})"
+def extract_abstract(text: str, abstract_markers: List[str], keywords_markers: List[str]) -> Optional[str]:
+    abs_pat = build_pattern(abstract_markers)
+    key_pat = build_pattern(keywords_markers)
 
-    match = re.search(pattern, text, re.S | re.I)
+    pattern = rf"{abs_pat}\s*(.*?)(?={key_pat})"
+    match = get_regex(pattern).search(text)
 
     if not match:
         return None
 
-    abstract = match.group(2)
+    abstract = match.group(1)
 
-    abstract = re.sub(r"^\s*\.+\s*", "", abstract)
-
-    abstract = re.sub(r"\s+", " ", abstract)
+    abstract = re.sub(r"^\.+\s*", "", abstract)
+    abstract = re.sub(r"\n+", " ", abstract)
+    abstract = re.sub(r"\s{2,}", " ", abstract)
 
     return abstract.strip()
 
-def extract_keywords(
-    text: str,
-    keywords_markers: List[str],
-    stop_markers: List[str],
-) -> Optional[str]:
-    key_pattern = build_marker_pattern(keywords_markers)
-    stop_pattern = build_marker_pattern(stop_markers)
 
-    pattern = rf"{key_pattern}\s*[:：]?\s*(.*?)(?:{stop_pattern}|\n\s*\n|$)"
+# =========================
+# KEYWORDS (FAST + STOP SAFE)
+# =========================
 
-    match = re.search(pattern, text, re.S | re.I)
+def extract_keywords(text: str, keywords_markers: List[str], stop_markers: List[str]) -> Optional[str]:
+    key_pat = build_pattern(keywords_markers)
+    stop_pat = build_pattern(stop_markers)
+
+    pattern = rf"{key_pat}\s*[:：]?\s*(.*?)(?={stop_pat}|\n[A-Z]|$)"
+    match = get_regex(pattern).search(text)
 
     if not match:
         return None
 
-    keywords_block = match.group(2)
+    keywords = match.group(1)
 
-    keywords_block = keywords_block.replace("\n", " ")
-    keywords_block = re.sub(r"\s+", " ", keywords_block)
+    keywords = re.sub(r"\n+", " ", keywords)
+    keywords = re.sub(r"\s{2,}", " ", keywords)
 
-    return keywords_block.strip(" .,\n\t")
+    return keywords.strip(" .,\n\t")
+
 
 # =========================
-# Normalizer
+# NORMALIZER (LIGHTWEIGHT)
 # =========================
 
-def normalize_text(text: Optional[str]) -> Optional[str]:
+def normalize(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
-    replacements = {
-        "ي": "ی",
-        "ك": "ک",
-        "\u200c": " ",
-    }
-
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-
+    text = text.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-def normalize_article(article: Article) -> Article:
-    return Article(
-        title=normalize_text(article.title),
-        abstract=normalize_text(article.abstract),
-        keywords=normalize_text(article.keywords),
-        language=article.language,
-    )
-
-
 # =========================
-# Parser
+# PARSE SINGLE ARTICLE
 # =========================
 
 def parse_article(text: str, lang: Language) -> Article:
-    config = LANG_CONFIG[lang]
+    cfg = LANG_CONFIG[lang]
 
-    abstract_markers: List[str] = config["abstract_markers"]
-    keywords_markers: List[str] = config["keywords_markers"]
+    title = extract_title(text, cfg["abstract_markers"])
+    abstract = extract_abstract(text, cfg["abstract_markers"], cfg["keywords_markers"])
+    keywords = extract_keywords(text, cfg["keywords_markers"], cfg["keywords_stop_markers"])
 
-    title = extract_title(text, abstract_markers)
-
-    abstract = extract_abstract(
-        text,
-        abstract_markers,
-        keywords_markers,
-    )
-
-    keywords = extract_keywords(
-        text,
-        keywords_markers,
-        config["keywords_stop_markers"],
-    )
-    return normalize_article(
-        Article(title, abstract, keywords, lang)
+    return Article(
+        normalize(title),
+        normalize(abstract),
+        normalize(keywords),
+        lang
     )
 
 
-def parse_articles(texts: List[str], lang: Language) -> List[Article]:
-    return [parse_article(t, lang) for t in texts]
+# =========================
+# PARALLEL PAGE PROCESSING
+# =========================
+
+def process_page(page: Tuple[str, Language]) -> List[Article]:
+    text, lang = page
+    cfg = LANG_CONFIG[lang]
+
+    articles_raw = split_articles(text, cfg["abstract_markers"])
+    return [parse_article(a, lang) for a in articles_raw]
 
 
 # =========================
-# Pipeline
+# PDF PIPELINE (PARALLEL)
 # =========================
 
-def process_pdf(pdf_path: str, lang: Language) -> List[Article]:
-    pages = extract_pages_text(pdf_path)
-    config = LANG_CONFIG[lang]
+def process_pdf_parallel(pdf_path: str, lang: Language, workers: int = 8) -> List[Article]:
+    pages = load_pdf_pages(pdf_path)
 
-    all_articles: List[Article] = []
+    tasks = [(p, lang) for p in pages]
 
-    for page in pages:
-        raw_articles = split_articles(page, config["abstract_markers"])
-        parsed = parse_articles(raw_articles, lang)
-        all_articles.extend(parsed)
+    results: List[Article] = []
 
-    return all_articles
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(process_page, t) for t in tasks]
+
+        for f in as_completed(futures):
+            results.extend(f.result())
+
+    return results
 
 
 # =========================
-# Export
+# EXPORT
 # =========================
 
-def articles_to_dataframe(articles: List[Article]) -> pd.DataFrame:
-    return pd.DataFrame([
+def export_excel(articles: List[Article], out: str) -> None:
+    df = pd.DataFrame([
         {
             "title": a.title,
             "abstract": a.abstract,
             "keywords": a.keywords,
-            "language": a.language,
+            "language": a.language
         }
         for a in articles
     ])
 
-
-def export_to_excel(articles: List[Article], output_path: str) -> None:
-    df = articles_to_dataframe(articles)
-    df.to_excel(output_path, index=False)
+    df.to_excel(out, index=False)
 
 
 # =========================
-# Validation
+# VALIDATION
 # =========================
 
-def is_valid_article(article: Article) -> bool:
-    return bool(article.abstract and len(article.abstract) > 50)
-
-
-def filter_valid_articles(articles: List[Article]) -> List[Article]:
-    return [a for a in articles if is_valid_article(a)]
+def filter_articles(articles: List[Article]) -> List[Article]:
+    return [a for a in articles if a.abstract and len(a.abstract) > 50]
 
 
 # =========================
-# Main
+# MAIN
 # =========================
 
-def run_pipeline(
-    persian_pdf: str,
-    english_pdf: str,
-    output_file: str = "conference_articles.xlsx",
-) -> None:
-    fa_articles: List[Article] = process_pdf(persian_pdf, "fa")
-    en_articles: List[Article] = process_pdf(english_pdf, "en")
+def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx") -> None:
+    fa = process_pdf_parallel(persian_pdf, "fa")
+    en = process_pdf_parallel(english_pdf, "en")
 
-    all_articles = fa_articles + en_articles
-    valid_articles = filter_valid_articles(all_articles)
+    all_articles = filter_articles(fa + en)
 
-    export_to_excel(valid_articles, output_file)
+    export_excel(all_articles, out)
 
 
 if __name__ == "__main__":
-    run_pipeline(
-        persian_pdf="persian.pdf",
-        english_pdf="english.pdf",
-        output_file="conference_articles.xlsx",
-    )
+    run("persian.pdf", "english.pdf")
