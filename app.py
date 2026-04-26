@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 import pdfplumber
 import pandas as pd
 
-
 Language = Literal["fa", "en"]
 
 LANG_CONFIG: Dict[Language, dict] = {
@@ -174,7 +173,7 @@ def _process_page(args: Tuple[str, Language, int]) -> List[Article]:
         ))
     return articles
 
-def process_pdf(pdf_path: str, lang: Language, workers: int = 8) -> List[Article]:
+def process_pdf(pdf_path: str, lang: Language, workers: int = 16) -> List[Article]:
     indexed_pages = load_pdf_pages(pdf_path, workers)
     tasks = [(text, lang, idx + 1) for idx, text in indexed_pages]
     results: List[Article] = []
@@ -205,7 +204,7 @@ def export_excel(articles: List[Article], out: str) -> None:
 def filter_articles(articles: List[Article]) -> List[Article]:
     return [a for a in articles if a.abstract and len(a.abstract) > 50]
 
-def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int = 8) -> None:
+def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int = 16) -> None:
     with ThreadPoolExecutor(max_workers=2) as pool:
         fa_f = pool.submit(process_pdf, persian_pdf, "fa", workers)
         en_f = pool.submit(process_pdf, english_pdf, "en", workers)
