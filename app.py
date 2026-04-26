@@ -53,6 +53,13 @@ _NOISE_RE = re.compile(
     re.I,
 )
 
+_ILLEGAL_XML_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+
+def _sanitize(text: Optional[str]) -> Optional[str]:
+    if text is None:
+        return None
+    return _ILLEGAL_XML_RE.sub('', text)
+
 def _re(pattern: str) -> re.Pattern:
     if pattern not in _REGEX_CACHE:
         _REGEX_CACHE[pattern] = re.compile(pattern, re.S | re.I)
@@ -203,9 +210,9 @@ def process_pdf(pdf_path: str, lang: Language, workers: int = 8) -> List[Article
 def export_excel(articles: List[Article], out: str) -> None:
     pd.DataFrame([
         {
-            "title": a.title,
-            "abstract": a.abstract,
-            "keywords": a.keywords,
+            "title": _sanitize(a.title),
+            "abstract": _sanitize(a.abstract),
+            "keywords": _sanitize(a.keywords),
             "language": a.language,
             "page_start": a.page_start,
             "page_end": a.page_end,
