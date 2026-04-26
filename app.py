@@ -187,7 +187,7 @@ def process_pdf(pdf_path: str, lang: Language, workers: int = 8) -> List[Article
             art.page_end = max(art.page_start, results[i + 1].page_start - 1)
         else:
             art.page_end = art.page_start
-            esults
+    return results
 
 def export_excel(articles: List[Article], out: str) -> None:
     pd.DataFrame([
