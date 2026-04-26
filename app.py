@@ -15,7 +15,7 @@ LANG_CONFIG: Dict[Language, dict] = {
         "abstract_markers": ["Abstract"],
         "keywords_markers": ["Keywords"],
         "keywords_stop_markers": ["MSC"],
-        
+    },
     "fa": {
         "abstract_markers": ["چکیده"],
         "keywords_markers": ["واژه های کلیدی"],
