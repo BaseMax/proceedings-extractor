@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Literal, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
@@ -212,5 +213,55 @@ def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int 
         
     export_excel(all_articles, out)
 
+def debug_pdf(pdf_path: str, lang: Language, pages: int = 5) -> None:
+    cfg = LANG_CONFIG[lang]
+    abs_markers = cfg["abstract_markers"]
+    kw_markers  = cfg["keywords_markers"]
+    stp_markers = cfg["keywords_stop_markers"]
+
+    print(f"\n{'='*60}")
+    print(f"DEBUG: {pdf_path}  lang={lang}")
+    print(f"  abstract_markers     : {abs_markers}")
+    print(f"  keywords_markers     : {kw_markers}")
+    print(f"  keywords_stop_markers: {stp_markers}")
+    print(f"{'='*60}\n")
+
+    abs_re = re.compile(_pat(abs_markers), re.S | re.I)
+    kw_re  = re.compile(_pat(kw_markers),  re.S | re.I)
+    stp_re = re.compile(_pat(stp_markers), re.S | re.I)
+
+    with pdfplumber.open(pdf_path) as pdf:
+        total = len(pdf.pages)
+        print(f"Total pages: {total}\n")
+        for i in range(min(pages, total)):
+            page = pdf.pages[i]
+            text = _page_text(page)
+            print(f"--- Page {i+1} (chars={len(page.chars)}) ---")
+            preview = text[:600].replace("\n", "\\n")
+            print(f"TEXT PREVIEW:\n  {preview}\n")
+
+            non_ascii = sorted({c for c in text if ord(c) > 127})[:30]
+            print(f"  Non-ASCII chars in page: {non_ascii}")
+
+            abs_m = abs_re.search(text)
+            kw_m  = kw_re.search(text)
+            stp_m = stp_re.search(text)
+            print(f"  abstract  marker match : {abs_m.group(0)!r} at pos {abs_m.start()} " if abs_m else "  abstract  marker match : NOT FOUND")
+            print(f"  keywords  marker match : {kw_m.group(0)!r} at pos {kw_m.start()} "  if kw_m  else "  keywords  marker match : NOT FOUND")
+            print(f"  stop      marker match : {stp_m.group(0)!r} at pos {stp_m.start()} " if stp_m else "  stop      marker match : NOT FOUND")
+
+            if abs_m and not kw_m:
+                snippet = text[abs_m.end():abs_m.end()+300].replace("\n", "\\n")
+                print(f"  [text after abstract marker]: {snippet!r}")
+
+            print()
+
+
 if __name__ == "__main__":
-    run("persian.pdf", "english.pdf")
+    if len(sys.argv) > 1 and sys.argv[1] == "debug":
+        pdf  = sys.argv[2] if len(sys.argv) > 2 else "persian.pdf"
+        lang = sys.argv[3] if len(sys.argv) > 3 else "fa"
+        npages = int(sys.argv[4]) if len(sys.argv) > 4 else 5
+        debug_pdf(pdf, lang, npages)
+    else:
+        run("persian.pdf", "english.pdf")
