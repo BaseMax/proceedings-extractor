@@ -80,9 +80,9 @@ def split_articles(text: str, abstract_markers: List[str]) -> List[str]:
 # =========================
 # Extractors
 # =========================
-
 def extract_title(block: str, abstract_markers: List[str]) -> Optional[str]:
     marker_pattern = build_marker_pattern(abstract_markers)
+
     parts = re.split(marker_pattern, block, maxsplit=1)
 
     if len(parts) < 2:
@@ -93,14 +93,21 @@ def extract_title(block: str, abstract_markers: List[str]) -> Optional[str]:
     lines = [
         l.strip()
         for l in header.split("\n")
-        if l.strip() and len(l.strip()) > 10
+        if l.strip()
     ]
 
     if not lines:
         return None
 
-    return max(lines, key=len)
+    filtered = [
+        l for l in lines
+        if len(l) > 15 and not l.strip().startswith(".")
+    ]
 
+    if not filtered:
+        return None
+
+    return max(filtered, key=len)
 
 def extract_abstract(
     text: str,
@@ -114,11 +121,16 @@ def extract_abstract(
 
     match = re.search(pattern, text, re.S | re.I)
 
-    if match:
-        return match.group(2).strip()
+    if not match:
+        return None
 
-    return None
+    abstract = match.group(2)
 
+    abstract = re.sub(r"^\s*\.+\s*", "", abstract)
+
+    abstract = re.sub(r"\s+", " ", abstract)
+
+    return abstract.strip()
 
 def extract_keywords(
     text: str,
