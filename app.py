@@ -53,7 +53,7 @@ _NOISE_RE = re.compile(
     re.I,
 )
 
-_ILLEGAL_XML_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+_ILLEGAL_XML_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]')
 
 def _sanitize(text: Optional[str]) -> Optional[str]:
     if text is None:
