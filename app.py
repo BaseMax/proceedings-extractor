@@ -54,6 +54,7 @@ _NOISE_RE = re.compile(
 )
 
 _ILLEGAL_XML_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]')
+_CID_RE = re.compile(r'\(cid:\d+\)')
 
 def _sanitize(text: Optional[str]) -> Optional[str]:
     if text is None:
@@ -100,7 +101,8 @@ def _page_text(page) -> str:
             text += ch_text
             prev_x1 = x1
             prev_width = width if width > 0 else prev_width
-        stripped = _fix_rtl(unicodedata.normalize('NFKC', text.strip()))
+        raw = _CID_RE.sub('', unicodedata.normalize('NFKC', text.strip()).replace('\u200c', ' ')).strip()
+        stripped = _fix_rtl(raw)
         if stripped:
             parts.append(stripped)
 
@@ -183,10 +185,14 @@ def _process_page(args: Tuple[str, Language, int]) -> List[Article]:
         header    = parts[i - 1]
         remainder = parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
         
+        kw = _norm(_keywords(remainder, kw_m, stp_m))
+        if lang == "fa" and kw:
+            kw = re.sub(r'طبقه\s+بندی.*', '', kw, flags=re.S).strip(" .,،")
+            kw = re.sub(r'[\s.,،]*(\b\d{2}[A-Z]\d{2}\b[\s,،]*)+$', '', kw).strip(" .,،")
         articles.append(Article(
             _norm(_title_from_header(header)),
             _norm(_abstract(remainder, abs_m, kw_m)),
-            _norm(_keywords(remainder, kw_m, stp_m)),
+            kw,
             lang,
             page_start=page_num,
         ))
