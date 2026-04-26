@@ -13,13 +13,13 @@ Language = Literal["fa", "en"]
 LANG_CONFIG: Dict[Language, dict] = {
     "en": {
         "abstract_markers": ["Abstract"],
-        "keywords_markers": ["Keywords", "Key words"],
-        "keywords_stop_markers": ["MSC", "Mathematics Subject Classification"],
-    },
+        "keywords_markers": ["Keywords"],
+        "keywords_stop_markers": ["MSC"],
+        
     "fa": {
         "abstract_markers": ["چکیده"],
-        "keywords_markers": ["کلیدواژه", "کلید واژه", "کلمات کلیدی", "واژه‌های کلیدی"],
-        "keywords_stop_markers": ["طبقه‌بندی موضوعی", "MSC"],
+        "keywords_markers": ["واژه های کلیدی"],
+        "keywords_stop_markers": ["طبقه بندی موضوعی"],
     },
 }
 
