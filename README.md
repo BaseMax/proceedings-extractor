@@ -1,8 +1,8 @@
-﻿# proceedings-extractor
+# proceedings-extractor
 
 A parallel PDF proceedings extractor that collects article metadata (title, abstract, keywords, page range) from conference proceedings PDFs and exports them to Excel.
 
-Originally designed for **CACNA 2025** a mathematics conference held at the **University of Kashan** to produce a structured spreadsheet of all articles so that the Iran government credit system could identify authors and assign publication credits.
+Originally designed for **CACNA 2025** - a mathematics conference held at the **University of Kashan** - to produce a structured spreadsheet of all articles so that the Iran government credit system could identify authors and assign publication credits.
 
 ---
 
@@ -10,10 +10,10 @@ Originally designed for **CACNA 2025** a mathematics conference held at the **Un
 
 - Extracts **title**, **abstract**, **keywords**, **page start**, and **page end** for every article
 - Supports both **Persian (Farsi)** and **English** proceedings PDFs simultaneously
-- **Parallel page loading** each thread opens its own PDF handle, no locking overhead
-- **Parallel page processing** all pages processed concurrently with `ThreadPoolExecutor`
+- **Parallel page loading** - each thread opens its own PDF handle, no locking overhead
+- **Parallel page processing** - all pages processed concurrently with `ThreadPoolExecutor`
 - Both PDFs (Persian + English) are processed **fully in parallel** with each other
-- **Character-level space detection** uses raw glyph bounding boxes to reconstruct proper word spacing, fixing the missing-space problem common in tightly-kerned academic PDFs
+- **Character-level space detection** - uses raw glyph bounding boxes to reconstruct proper word spacing, fixing the missing-space problem common in tightly-kerned academic PDFs
 - Exports a clean `.xlsx` file via `pandas`
 
 ---
@@ -66,26 +66,26 @@ run(
 | `abstract` | Full abstract text |
 | `keywords` | Keywords / key phrases |
 | `language` | `fa` (Persian) or `en` (English) |
-| `page_start` | 1-based PDF page where the article's abstract/title was found |
+| `page_start` | 1-based PDF page where the article abstract/title was found |
 | `page_end` | 1-based PDF page just before the next article begins |
 
 ---
 
 ## How It Works
 
-1. **PDF loading** the PDF is split into equal page-range chunks; each thread opens its own `pdfplumber` instance and extracts its chunk in parallel, then results are merged in page order.
+1. **PDF loading** - the PDF is split into equal page-range chunks; each thread opens its own `pdfplumber` instance and extracts its chunk in parallel, then results are merged in page order.
 
-2. **Text reconstruction** instead of `extract_text()` (which loses spaces under tight kerning), raw character bounding boxes (`page.chars`) are used. A gap between two consecutive characters that exceeds 15% of the reference character width is treated as a word boundary and a space is inserted.
+2. **Text reconstruction** - instead of `extract_text()` (which loses spaces under tight kerning), raw character bounding boxes (`page.chars`) are used. A gap between two consecutive characters that exceeds 15% of the reference character width is treated as a word boundary and a space is inserted.
 
-3. **Article detection** each page is scanned for abstract marker words (`Abstract` / `Ú†Ú©ÛŒØ¯Ù‡`). Every occurrence splits the page into a new article region. Pages with no abstract marker are skipped immediately (fast path).
+3. **Article detection** - each page is scanned for abstract marker words (`Abstract` / `چکیده`). Every occurrence splits the page into a new article region. Pages with no abstract marker are skipped immediately (fast path).
 
-4. **Title extraction** the header text before the abstract marker on the same page is split into paragraph blocks (separated by blank lines). The last block's first non-noise line is the title noise being email addresses, bare numbers, page ranges, and affiliation keywords.
+4. **Title extraction** - the header text before the abstract marker on the same page is split into paragraph blocks (separated by blank lines). The last block's first non-noise line is the title - noise being email addresses, bare numbers, page ranges, and affiliation keywords.
 
-5. **Abstract & keyword extraction** regex patterns anchored between known markers capture the body text; line breaks are collapsed to spaces.
+5. **Abstract & keyword extraction** - regex patterns anchored between known markers capture the body text; line breaks are collapsed to spaces.
 
-6. **Page range computation** after all pages are processed, articles are sorted by `page_start`. `page_end` for article _i_ is set to `page_start[i+1] - 1` (the last page before the next article begins).
+6. **Page range computation** - after all pages are processed, articles are sorted by `page_start`. `page_end` for article _i_ is set to `page_start[i+1] - 1` (the last page before the next article begins).
 
-7. **Export** filtered articles (abstract length > 50 characters) are written to `.xlsx`.
+7. **Export** - filtered articles (abstract length > 50 characters) are written to `.xlsx`.
 
 ---
 
@@ -101,9 +101,9 @@ LANG_CONFIG = {
         "keywords_stop_markers":   ["MSC", "Mathematics Subject Classification"],
     },
     "fa": {
-        "abstract_markers":        ["Ú†Ú©ÛŒØ¯Ù‡"],
-        "keywords_markers":        ["Ú©Ù„ÛŒØ¯ÙˆØ§Ú˜Ù‡", "Ú©Ù„ÛŒØ¯ ÙˆØ§Ú˜Ù‡", "Ú©Ù„Ù…Ø§Øª Ú©Ù„ÛŒØ¯ÛŒ", "ÙˆØ§Ú˜Ù‡â€ŒÙ‡Ø§ÛŒ Ú©Ù„ÛŒØ¯ÛŒ"],
-        "keywords_stop_markers":   ["Ø·Ø¨Ù‚Ù‡â€ŒØ¨Ù†Ø¯ÛŒ Ù…ÙˆØ¶ÙˆØ¹ÛŒ", "MSC"],
+        "abstract_markers":        ["چکیده"],
+        "keywords_markers":        ["کلیدواژه", "کلید واژه", "کلمات کلیدی", "واژه‌های کلیدی"],
+        "keywords_stop_markers":   ["طبقه‌بندی موضوعی", "MSC"],
     },
 }
 ```

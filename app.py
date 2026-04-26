@@ -12,14 +12,14 @@ Language = Literal["fa", "en"]
 
 LANG_CONFIG: Dict[Language, dict] = {
     "en": {
-        "abstract_markers": ["Abstract"],
-        "keywords_markers": ["Keywords"],
-        "keywords_stop_markers": ["MSC"],
+        "abstract_markers": ["Abstract."],
+        "keywords_markers": ["Keywords:"],
+        "keywords_stop_markers": ["MSC("],
     },
     "fa": {
-        "abstract_markers": ["چکیده"],
-        "keywords_markers": ["واژه های کلیدی"],
-        "keywords_stop_markers": ["طبقه بندی موضوعی"],
+        "abstract_markers": ["چکیده."],
+        "keywords_markers": ["واژه های کلیدی:"],
+        "keywords_stop_markers": ["طبقه بندی موضوعی ["],
     },
 }
 
@@ -206,9 +206,10 @@ def filter_articles(articles: List[Article]) -> List[Article]:
 def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int = 8) -> None:
     with ThreadPoolExecutor(max_workers=2) as pool:
         fa_f = pool.submit(process_pdf, persian_pdf, "fa", workers)
-        en_f = pool.submit(process_pdf, english_pdf, "en", workers)
-        all_articles = filter_articles(fa_f.result() + en_f.result())
-
+        # en_f = pool.submit(process_pdf, english_pdf, "en", workers)
+        # all_articles = filter_articles(fa_f.result() + en_f.result())
+        all_articles = filter_articles(fa_f.result())
+        
     export_excel(all_articles, out)
 
 if __name__ == "__main__":
