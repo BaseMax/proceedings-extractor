@@ -50,17 +50,40 @@ def _pat(markers: List[str]) -> str:
     return "(" + "|".join(re.escape(m) for m in markers) + ")"
 
 def _page_text(page) -> str:
-    words = page.extract_words(x_tolerance=3, y_tolerance=3)
-    if not words:
+    chars = page.chars
+    if not chars:
         return ""
+
     lines: Dict[int, list] = {}
-    for w in words:
-        y = round(float(w["top"]))
-        lines.setdefault(y, []).append(w)
+    for ch in chars:
+        if not ch.get("text"):
+            continue
+        y = round(float(ch["top"]))
+        lines.setdefault(y, []).append(ch)
+
     parts = []
     for y in sorted(lines):
-        row = sorted(lines[y], key=lambda w: w["x0"])
-        parts.append(" ".join(w["text"] for w in row))
+        row = sorted(lines[y], key=lambda c: float(c["x0"]))
+        text = ""
+        prev_x1: Optional[float] = None
+        prev_width: float = 1.0
+        for ch in row:
+            ch_text = ch["text"]
+            x0 = float(ch["x0"])
+            x1 = float(ch["x1"])
+            width = max(x1 - x0, 0.0)
+            if prev_x1 is not None:
+                gap = x0 - prev_x1
+                ref = max(prev_width, width, 1.0)
+                if gap > ref * 0.15:   # gap > 15% of char width → word boundary
+                    text += " "
+            text += ch_text
+            prev_x1 = x1
+            prev_width = width if width > 0 else prev_width
+        stripped = text.strip()
+        if stripped:
+            parts.append(stripped)
+
     return "\n".join(parts)
 
 def _load_chunk(args: Tuple[str, int, int]) -> List[Tuple[int, str]]:
