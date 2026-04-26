@@ -1,17 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Literal, Dict, Pattern, Tuple
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List, Optional, Literal, Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 import pdfplumber
 import pandas as pd
 
-
-# =========================
-# Types & Config
-# =========================
 
 Language = Literal["fa", "en"]
 
@@ -29,10 +25,6 @@ LANG_CONFIG: Dict[Language, dict] = {
 }
 
 
-# =========================
-# Models
-# =========================
-
 @dataclass
 class Article:
     title: Optional[str]
@@ -40,236 +32,146 @@ class Article:
     keywords: Optional[str]
     language: Language
 
+_REGEX_CACHE: Dict[str, re.Pattern] = {}
 
-# =========================
-# Regex Cache (IMPORTANT SPEED OPTIMIZATION)
-# =========================
+_NOISE_RE = re.compile(
+    r"@|^\d+$|^\d+\s*[-–]\s*\d+$"
+    r"|\b(faculty|university|department|institute|laboratory|lab)\b",
+    re.I,
+)
 
-_REGEX_CACHE: Dict[str, Pattern[str]] = {}
-
-
-def get_regex(pattern: str) -> Pattern[str]:
+def _re(pattern: str) -> re.Pattern:
     if pattern not in _REGEX_CACHE:
         _REGEX_CACHE[pattern] = re.compile(pattern, re.S | re.I)
     return _REGEX_CACHE[pattern]
 
 
-def build_pattern(markers: List[str]) -> str:
+def _pat(markers: List[str]) -> str:
     return "(" + "|".join(re.escape(m) for m in markers) + ")"
 
+def _page_text(page) -> str:
+    words = page.extract_words(x_tolerance=3, y_tolerance=3)
+    if not words:
+        return ""
+    lines: Dict[int, list] = {}
+    for w in words:
+        y = round(float(w["top"]))
+        lines.setdefault(y, []).append(w)
+    parts = []
+    for y in sorted(lines):
+        row = sorted(lines[y], key=lambda w: w["x0"])
+        parts.append(" ".join(w["text"] for w in row))
+    return "\n".join(parts)
 
-# =========================
-# PDF LOADER
-# =========================
-
-def load_pdf_pages(pdf_path: str) -> List[str]:
-    pages: List[str] = []
-
+def _load_chunk(args: Tuple[str, int, int]) -> List[Tuple[int, str]]:
+    pdf_path, start, end = args
+    out: List[Tuple[int, str]] = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
+        for i in range(start, end):
+            text = _page_text(pdf.pages[i])
             if text:
-                pages.append(text)
+                out.append((i, text))
+    return out
 
-    return pages
+def load_pdf_pages(pdf_path: str, workers: int = 8) -> List[str]:
+    with pdfplumber.open(pdf_path) as pdf:
+        n = len(pdf.pages)
+    if n == 0:
+        return []
 
+    chunk = max(1, (n + workers - 1) // workers)
+    chunks = [(pdf_path, s, min(s + chunk, n)) for s in range(0, n, chunk)]
 
-# =========================
-# SPLIT ARTICLES (FAST)
-# =========================
+    indexed: List[Tuple[int, str]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for batch in pool.map(_load_chunk, chunks):
+            indexed.extend(batch)
 
-def split_articles(page: str, abstract_markers: List[str]) -> List[str]:
-    pattern = get_regex(build_pattern(abstract_markers))
-    parts = pattern.split(page)
+    indexed.sort(key=lambda x: x[0])
+    return [t for _, t in indexed]
 
-    articles: List[str] = []
-
-    for i in range(1, len(parts), 2):
-        content = parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
-        articles.append(content)
-
-    return articles
-
-
-# =========================
-# TITLE EXTRACTION
-# =========================
-
-def extract_title(text: str, abstract_markers: List[str]) -> Optional[str]:
-    marker_pat = get_regex(build_pattern(abstract_markers))
-
-    parts = marker_pat.split(text, maxsplit=1)
-    if len(parts) < 2:
+def _title_from_header(header: str) -> Optional[str]:
+    paras = [p.strip() for p in re.split(r"\n\s*\n", header) if p.strip()]
+    if not paras:
         return None
+    lines = [l.strip() for l in paras[-1].split("\n") if l.strip()]
+    for line in lines:
+        if _NOISE_RE.search(line) or len(line) < 4:
+            continue
+        return line
+    return None
 
-    header = parts[0]
-
-    lines = [
-        l.strip()
-        for l in header.split("\n")
-        if len(l.strip()) > 8
-    ]
-
-    if not lines:
+def _abstract(text: str, abs_markers: List[str], kw_markers: List[str]) -> Optional[str]:
+    m = _re(rf"{_pat(abs_markers)}\s*(.*?)(?={_pat(kw_markers)})").search(text)
+    if not m:
         return None
+    body = re.sub(r"^[.:\s]+", "", m.group(2))
+    body = re.sub(r"\n+", " ", body)
+    return re.sub(r"\s{2,}", " ", body).strip()
 
-    # filter noise
-    cleaned = [
-        l for l in lines
-        if not re.search(r"@|\d|university|department|faculty", l, re.I)
-    ]
-
-    return max(cleaned, key=len) if cleaned else None
-
-
-# =========================
-# ABSTRACT (FAST + CLEAN)
-# =========================
-
-def extract_abstract(text: str, abstract_markers: List[str], keywords_markers: List[str]) -> Optional[str]:
-    abs_pat = build_pattern(abstract_markers)
-    key_pat = build_pattern(keywords_markers)
-
-    pattern = rf"{abs_pat}\s*(.*?)(?={key_pat})"
-    match = get_regex(pattern).search(text)
-
-    if not match:
+def _keywords(text: str, kw_markers: List[str], stop_markers: List[str]) -> Optional[str]:
+    m = _re(rf"{_pat(kw_markers)}\s*[:：]?\s*(.*?)(?={_pat(stop_markers)}|\n[A-Z]|$)").search(text)
+    if not m:
         return None
+    body = re.sub(r"\n+", " ", m.group(2))
+    return re.sub(r"\s{2,}", " ", body).strip(" .,\n\t")
 
-    abstract = match.group(1)
-
-    abstract = re.sub(r"^\.+\s*", "", abstract)
-    abstract = re.sub(r"\n+", " ", abstract)
-    abstract = re.sub(r"\s{2,}", " ", abstract)
-
-    return abstract.strip()
-
-
-# =========================
-# KEYWORDS (FAST + STOP SAFE)
-# =========================
-
-def extract_keywords(text: str, keywords_markers: List[str], stop_markers: List[str]) -> Optional[str]:
-    key_pat = build_pattern(keywords_markers)
-    stop_pat = build_pattern(stop_markers)
-
-    pattern = rf"{key_pat}\s*[:：]?\s*(.*?)(?={stop_pat}|\n[A-Z]|$)"
-    match = get_regex(pattern).search(text)
-
-    if not match:
-        return None
-
-    keywords = match.group(1)
-
-    keywords = re.sub(r"\n+", " ", keywords)
-    keywords = re.sub(r"\s{2,}", " ", keywords)
-
-    return keywords.strip(" .,\n\t")
-
-
-# =========================
-# NORMALIZER (LIGHTWEIGHT)
-# =========================
-
-def normalize(text: Optional[str]) -> Optional[str]:
+def _norm(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
-
     text = text.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
-    text = re.sub(r"\s+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
-    return text.strip()
-
-
-# =========================
-# PARSE SINGLE ARTICLE
-# =========================
-
-def parse_article(text: str, lang: Language) -> Article:
+def _process_page(args: Tuple[str, Language]) -> List[Article]:
+    text, lang = args
     cfg = LANG_CONFIG[lang]
+    abs_m = cfg["abstract_markers"]
+    kw_m  = cfg["keywords_markers"]
+    stp_m = cfg["keywords_stop_markers"]
 
-    title = extract_title(text, cfg["abstract_markers"])
-    abstract = extract_abstract(text, cfg["abstract_markers"], cfg["keywords_markers"])
-    keywords = extract_keywords(text, cfg["keywords_markers"], cfg["keywords_stop_markers"])
+    splitter = _re(_pat(abs_m))
+    if not splitter.search(text):
+        return []
 
-    return Article(
-        normalize(title),
-        normalize(abstract),
-        normalize(keywords),
-        lang
-    )
+    parts = splitter.split(text)
 
+    articles: List[Article] = []
+    for i in range(1, len(parts), 2):
+        header    = parts[i - 1]
+        remainder = parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
+        
+        articles.append(Article(
+            _norm(_title_from_header(header)),
+            _norm(_abstract(remainder, abs_m, kw_m)),
+            _norm(_keywords(remainder, kw_m, stp_m)),
+            lang,
+        ))
+    return articles
 
-# =========================
-# PARALLEL PAGE PROCESSING
-# =========================
-
-def process_page(page: Tuple[str, Language]) -> List[Article]:
-    text, lang = page
-    cfg = LANG_CONFIG[lang]
-
-    articles_raw = split_articles(text, cfg["abstract_markers"])
-    return [parse_article(a, lang) for a in articles_raw]
-
-
-# =========================
-# PDF PIPELINE (PARALLEL)
-# =========================
-
-def process_pdf_parallel(pdf_path: str, lang: Language, workers: int = 8) -> List[Article]:
-    pages = load_pdf_pages(pdf_path)
-
-    tasks = [(p, lang) for p in pages]
-
+def process_pdf(pdf_path: str, lang: Language, workers: int = 8) -> List[Article]:
+    pages = load_pdf_pages(pdf_path, workers)
     results: List[Article] = []
-
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(process_page, t) for t in tasks]
-
-        for f in as_completed(futures):
-            results.extend(f.result())
-
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for articles in pool.map(_process_page, [(p, lang) for p in pages]):
+            results.extend(articles)
     return results
 
-
-# =========================
-# EXPORT
-# =========================
-
 def export_excel(articles: List[Article], out: str) -> None:
-    df = pd.DataFrame([
-        {
-            "title": a.title,
-            "abstract": a.abstract,
-            "keywords": a.keywords,
-            "language": a.language
-        }
+    pd.DataFrame([
+        {"title": a.title, "abstract": a.abstract, "keywords": a.keywords, "language": a.language}
         for a in articles
-    ])
-
-    df.to_excel(out, index=False)
-
-
-# =========================
-# VALIDATION
-# =========================
+    ]).to_excel(out, index=False)
 
 def filter_articles(articles: List[Article]) -> List[Article]:
     return [a for a in articles if a.abstract and len(a.abstract) > 50]
 
-
-# =========================
-# MAIN
-# =========================
-
-def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx") -> None:
-    fa = process_pdf_parallel(persian_pdf, "fa")
-    en = process_pdf_parallel(english_pdf, "en")
-
-    all_articles = filter_articles(fa + en)
+def run(persian_pdf: str, english_pdf: str, out: str = "out.xlsx", workers: int = 8) -> None:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fa_f = pool.submit(process_pdf, persian_pdf, "fa", workers)
+        en_f = pool.submit(process_pdf, english_pdf, "en", workers)
+        all_articles = filter_articles(fa_f.result() + en_f.result())
 
     export_excel(all_articles, out)
-
 
 if __name__ == "__main__":
     run("persian.pdf", "english.pdf")
